@@ -24,6 +24,7 @@ import numpy.testing as npt
 import pandas as pd
 import pandas.testing as pdt
 from pandas.tests.extension import base
+import pyarrow as pa
 import pytest
 
 from text_extensions_for_pandas.array.tensor import TensorArray, TensorElement, TensorDtype
@@ -63,24 +64,24 @@ class TestTensor(unittest.TestCase):
     def test_create_from_scalar(self):
         s = TensorArray(2112)
         self.assertEqual(len(s), 1)
-        self.assertTupleEqual(s.to_numpy().shape, (1,))
+        self.assertTupleEqual(s.numpy_shape, (1,))
         self.assertEqual(s[0], 2112)
 
         s = TensorArray(np.int64(2112))
         self.assertEqual(len(s), 1)
-        self.assertTupleEqual(s.to_numpy().shape, (1,))
+        self.assertTupleEqual(s.numpy_shape, (1,))
         self.assertEqual(s[0], 2112)
 
         x = np.array([1, 2112, 3])
         e = TensorElement(x[1])
         s = TensorArray(e)
-        self.assertTupleEqual(s.to_numpy().shape, (1,))
+        self.assertTupleEqual(s.numpy_shape, (1,))
         self.assertEqual(s[0], 2112)
 
     def test_create_from_scalar_list(self):
         x = [1, 2, 3, 4, 5]
         s = TensorArray(x)
-        self.assertTupleEqual(s.to_numpy().shape, (len(x),))
+        self.assertTupleEqual(s.numpy_shape, (len(x),))
         expected = np.array(x)
         npt.assert_array_equal(s.to_numpy(), expected)
 
@@ -163,20 +164,20 @@ class TestTensor(unittest.TestCase):
         s2 = TensorArray(x * 3)
         result = s1 + s2
         self.assertTrue(isinstance(result, TensorArray))
-        npt.assert_equal(result.to_numpy().shape, [5, 3])
+        npt.assert_equal(result.numpy_shape, [5, 3])
         self.assertTrue(np.all(result == 5))
 
         # multiply TensorArrays
         s1 = TensorArray(x * 2)
         s2 = TensorArray(x * 3)
         result = s1 * s2
-        npt.assert_equal(result.to_numpy().shape, [5, 3])
+        npt.assert_equal(result.numpy_shape, [5, 3])
         self.assertTrue(np.all(result == 6))
 
         # multiply scalar
         s1 = TensorArray(x * 2)
         result = s1 * 4
-        npt.assert_equal(result.to_numpy().shape, [5, 3])
+        npt.assert_equal(result.numpy_shape, [5, 3])
         self.assertTrue(np.all(result == 8))
 
     def test_setitem(self):
@@ -398,7 +399,7 @@ class TestTensor(unittest.TestCase):
         # Test no missing gets same dtype
         result = s.take([0, 2], allow_fill=True)
         expected = np.array([[1, 2], [5, 6]])
-        self.assertEqual(result.to_numpy().dtype, expected.dtype)
+        self.assertEqual(result.numpy_dtype, expected.dtype)
         npt.assert_array_equal(result, expected)
         result = s.take([0, 2], allow_fill=False)
         npt.assert_array_equal(result, expected)
@@ -406,9 +407,16 @@ class TestTensor(unittest.TestCase):
         # Test missing with nan fill gets promoted to float and filled
         result = s.take([1, -1], allow_fill=True)
         expected = np.array([[3, 4], [np.nan, np.nan]])
-        self.assertEqual(result.to_numpy().dtype, expected.dtype)
+        self.assertEqual(result.numpy_dtype, expected.dtype)
         npt.assert_array_equal(result, expected)
         npt.assert_array_equal(result.isna(), [False, True])
+
+    def test_numpy_properties(self):
+        data = np.arange(6).reshape(3, 2)
+        arr = TensorArray(data)
+        self.assertEqual(arr.numpy_ndim, data.ndim)
+        self.assertEqual(arr.numpy_shape, data.shape)
+        self.assertEqual(arr.numpy_dtype, data.dtype)
 
 
 class TensorArrayDataFrameTests(unittest.TestCase):
@@ -426,7 +434,7 @@ class TensorArrayDataFrameTests(unittest.TestCase):
 
         # Check array gets unwrapped from TensorElements
         arr = result_df["value"].array
-        self.assertEqual(arr.to_numpy().dtype, values.dtype)
+        self.assertEqual(arr.numpy_dtype, values.dtype)
         npt.assert_array_equal(arr.to_numpy(), [[2, 2], [1, 1], [3, 3]])
 
         # Check the resulting DataFrame
@@ -449,7 +457,7 @@ class TensorArrayDataFrameTests(unittest.TestCase):
 
         # Check array gets unwrapped from TensorElements
         arr2 = result2_df["value"].array
-        self.assertEqual(arr2.to_numpy().dtype, values.dtype)
+        self.assertEqual(arr2.numpy_dtype, values.dtype)
         npt.assert_array_equal(arr2.to_numpy(),
                                [[[2, 2], [2, 2]], [[1, 1], [1, 1]], [[3, 3], [3, 3]]])
 
@@ -521,7 +529,7 @@ class TensorArrayDataFrameTests(unittest.TestCase):
         date_range = pd.date_range('2018-01-01', periods=3, freq='H')
         df = pd.DataFrame({"time": date_range, "tensor": arr})
         df = df.sort_values(by="time", ascending=False)
-        self.assertEqual(df["tensor"].array.to_numpy().dtype, arr.to_numpy().dtype)
+        self.assertEqual(df["tensor"].array.numpy_dtype, arr.numpy_dtype)
         expected = np.array([[4, 5], [2, 3], [0, 1]])
         npt.assert_array_equal(df["tensor"].array, expected)
 
@@ -613,7 +621,8 @@ class TensorArrayIOTests(unittest.TestCase):
             df_read = pd.read_feather(filename)
             pd.testing.assert_frame_equal(df, df_read)
 
-    @unittest.skip("TODO: error when reading parquet back")
+    @pytest.mark.skipif(LooseVersion(pa.__version__) < LooseVersion("2.0.0"),
+                        reason="Nested Parquet data types only supported in Arrow >= 2.0.0")
     def test_parquet(self):
         x = np.arange(10).reshape(5, 2)
         s = TensorArray(x)
@@ -626,7 +635,6 @@ class TensorArrayIOTests(unittest.TestCase):
             pd.testing.assert_frame_equal(df, df_read)
 
     def test_feather_chunked(self):
-        import pyarrow as pa
         from pyarrow.feather import write_feather
 
         x = np.arange(10).reshape(5, 2)
@@ -650,7 +658,6 @@ class TensorArrayIOTests(unittest.TestCase):
             pd.testing.assert_frame_equal(df_expected, df_read)
 
     def test_feather_auto_chunked(self):
-        import pyarrow as pa
         from pyarrow.feather import read_table, write_feather
 
         x = np.arange(2048).reshape(1024, 2)
@@ -677,6 +684,12 @@ def dtype():
 @pytest.fixture
 def data(dtype):
     values = np.array([[i] for i in range(100)])
+    return pd.array(values, dtype=dtype)
+
+
+@pytest.fixture
+def data_for_twos(dtype):
+    values = np.ones(100) * 2
     return pd.array(values, dtype=dtype)
 
 
@@ -720,6 +733,29 @@ def data_for_grouping(dtype):
 
 
 # Can't import due to dependencies, taken from pandas.conftest import all_compare_operators
+_all_arithmetic_operators = [
+    "__add__",
+    "__radd__",
+    "__sub__",
+    "__rsub__",
+    "__mul__",
+    "__rmul__",
+    "__floordiv__",
+    "__rfloordiv__",
+    "__truediv__",
+    "__rtruediv__",
+    "__pow__",
+    "__rpow__",
+    "__mod__",
+    "__rmod__",
+]
+
+
+@pytest.fixture(params=_all_arithmetic_operators)
+def all_arithmetic_operators(request):
+    return request.param
+
+
 @pytest.fixture(params=["__eq__", "__ne__", "__lt__", "__gt__", "__le__", "__ge__"])
 def all_compare_operators(request):
     return request.param
@@ -795,19 +831,74 @@ class TestPandasSetitem(base.BaseSetitemTests):
         assert np.all(result == data[0])
 
 
-@pytest.mark.skip("resolve errors")
 class TestPandasMissing(base.BaseMissingTests):
-    pass
+    @pytest.mark.skip(reason="TypeError: No matching signature found")
+    def test_fillna_limit_pad(self, data_missing):
+        super().test_fillna_limit_pad(data_missing)
+
+    @pytest.mark.skip(reason="TypeError: No matching signature found")
+    def test_fillna_limit_backfill(self, data_missing):
+        super().test_fillna_limit_backfill(data_missing)
+
+    @pytest.mark.skip(reason="TypeError: No matching signature found")
+    def test_fillna_series_method(self, data_missing, fillna_method):
+        super().test_fillna_series_method(data_missing, fillna_method)
 
 
-@pytest.mark.skip("resolve errors")
 class TestPandasArithmeticOps(base.BaseArithmeticOpsTests):
-    pass
+
+    # Expected errors for tests
+    base.BaseArithmeticOpsTests.series_scalar_exc = None
+    base.BaseArithmeticOpsTests.series_array_exc = None
+    base.BaseArithmeticOpsTests.frame_scalar_exc = None
+    base.BaseArithmeticOpsTests.divmod_exc = NotImplementedError
+
+    def test_arith_series_with_array(self, data, all_arithmetic_operators):
+        """ Override because creates Series from list of TensorElements as dtype=object."""
+        # ndarray & other series
+        op_name = all_arithmetic_operators
+        s = pd.Series(data)
+        self.check_opname(
+            s, op_name, pd.Series([s.iloc[0]] * len(s), dtype=TensorDtype()), exc=self.series_array_exc
+        )
+
+    @pytest.mark.skip(reason="TensorArray does not error on ops")
+    def test_error(self, data, all_arithmetic_operators):
+        # other specific errors tested in the TensorArray specific tests
+        pass
 
 
-@pytest.mark.skip("resolve errors")
 class TestPandasComparisonOps(base.BaseComparisonOpsTests):
-    pass
+
+    def _compare_other(self, s, data, op_name, other):
+        """
+        Override to eval result of `all()` as a `ndarray`.
+        NOTE: test_compare_scalar uses value `0` for other.
+        """
+        op = self.get_op_from_name(op_name)
+        if op_name == "__eq__":
+            assert not np.all(op(s, other).all())
+        elif op_name == "__ne__":
+            assert np.all(op(s, other).all())
+        elif op_name in ["__lt__", "__le__"]:
+            assert not np.all(op(s, other).all())
+        elif op_name in ["__gt__", "__ge__"]:
+            assert np.all(op(s, other).all())
+        else:
+            raise ValueError("Unexpected opname: {}".format(op_name))
+
+    def test_compare_scalar(self, data, all_compare_operators):
+        """ Override to change scalar value to something usable."""
+        op_name = all_compare_operators
+        s = pd.Series(data)
+        self._compare_other(s, data, op_name, -1)
+
+    def test_compare_array(self, data, all_compare_operators):
+        """ Override to change scalar value to something usable."""
+        op_name = all_compare_operators
+        s = pd.Series(data[1:])
+        other = pd.Series([data[0]] * len(s), dtype=TensorDtype())
+        self._compare_other(s, data, op_name, other)
 
 
 @pytest.mark.skip("resolve errors")
